@@ -4,11 +4,24 @@ import {optionStyles} from '../../styles/optionsStyles';
 import Icons from '../global/Icons';
 import {Colors} from '../../utils/Constants';
 import CustomText from '../global/CustomText';
+import {useTCP} from '../../services/TCPProvider';
+import {navigate} from '../../utils/NavigationUtil';
 
 const Options = ({isHome, onMediaPickedUp, onFilePickedUp}) => {
   // const {isHome, onMediaPickedUp, onFilePickedUp} = props;
 
-  const handleUniversalPicker = async () => {};
+  const {isConnected} = useTCP();
+  const handleUniversalPicker = async () => {
+    if (isHome) {
+      if (isConnected) {
+        navigate('ConnectionScreen');
+      } else {
+        navigate('SendScreen');
+      }
+      return;
+    }
+    // if(){}
+  };
 
   return (
     <View style={optionStyles.container}>

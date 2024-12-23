@@ -1,4 +1,6 @@
-import {createContext, FC, useCallback, useContext, useState} from 'react';
+/* eslint-disable react-hooks/exhaustive-deps */
+import 'react-native-get-random-values';
+import React, {createContext, useCallback, useContext, useState} from 'react';
 import {useChunkStore} from '../db/chunkStore';
 import TcpSocket from 'react-native-tcp-socket';
 import DeviceInfo from 'react-native-device-info';
@@ -7,29 +9,14 @@ import RNFS from 'react-native-fs';
 import {Alert, Platform} from 'react-native';
 import {v4 as uuidv4} from 'uuid';
 import {produce} from 'immer';
+import {receiveChunkAck, recevieFileAck, sendChunkAck} from './TCPUtils';
 
-interface TCPContextType {
-  server: any;
-  client: any;
-  isConnected: boolean;
-  connectedDevice: any;
-  sendFiles: any;
-  receviedFiles: any;
-  totalSendBytes: number;
-  totalReceviedBytes: number;
-  startServer: (port: number) => void;
-  connectToServer: (host: string, port: number, deviceName: string) => void;
-  sendMessage: (message: string | Buffer) => void;
-  sendFileAck: (file: any, type: 'file' | 'image') => void;
-  disconnect: () => void;
-}
+const TCPContext = createContext(undefined);
 
-const TCPContext = createContext<TCPContextType | undefined>(undefined);
-
-export const useTCP = (): TCPContextType => {
+export const useTCP = () => {
   const context = useContext(TCPContext);
   if (!context) {
-    throw new Error('useTCP must be use within a TCPProvider');
+    throw new Error('useTCP must be used within a TCPProvider');
   }
   return context;
 };
@@ -38,24 +25,22 @@ const options = {
   keystore: require('../../tls_cert/server-keystore.p12'),
 };
 
-export const TCPProvider: FC<{children: React.ReactNode}> = ({children}) => {
-  const [server, setServer] = useState<any>(null);
-  const [client, setClient] = useState<any>(null);
-  const [isConnected, setIsConnected] = useState<any>(false);
-  const [connectedDevice, setconnectedDevice] = useState<any>(null);
-  const [serverSocket, setServerSocket] = useState<any>(null);
-  const [sendFiles, setSendFiles] = useState<any>([]);
-  const [receviedFiles, setReceviedFiles] = useState<any>([]);
-  const [totalSendBytes, setTotalSendBytes] = useState<number>(0);
-  const [totalReceviedBytes, setTotalReceviedBytes] = useState<number>(0);
+export const TCPProvider = ({children}) => {
+  const [server, setServer] = useState(null);
+  const [client, setClient] = useState(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [connectedDevice, setconnectedDevice] = useState(null);
+  const [serverSocket, setServerSocket] = useState(null);
+  const [sendFiles, setSendFiles] = useState([]);
+  const [receviedFiles, setReceviedFiles] = useState([]);
+  const [totalSendBytes, setTotalSendBytes] = useState(0);
+  const [totalReceviedBytes, setTotalReceviedBytes] = useState(0);
 
   const {currentChunkSet, setCurrentChunkeSet, setChunkeStore} =
     useChunkStore();
 
-  //start server
-
   const startServer = useCallback(
-    (port: number) => {
+    port => {
       if (server) {
         console.log('server already running');
         return;
@@ -76,6 +61,23 @@ export const TCPProvider: FC<{children: React.ReactNode}> = ({children}) => {
           }
           if (parseData?.event === 'file_ack') {
             recevieFileAck(parseData?.file, socket, setReceviedFiles);
+          }
+          if (parseData?.event === 'send_chunk_ack') {
+            sendChunkAck(
+              parseData?.chunkNo,
+              socket,
+              setTotalSendBytes,
+              setSendFiles,
+            );
+          }
+          if (parseData?.event === 'receive_chunk_ack') {
+            receiveChunkAck(
+              parseData?.chunk,
+              parseData?.chunkNo,
+              socket,
+              setTotalReceviedBytes,
+              generateFile,
+            );
           }
         });
         socket.on('close', () => {
@@ -103,7 +105,7 @@ export const TCPProvider: FC<{children: React.ReactNode}> = ({children}) => {
   );
 
   const connectToServer = useCallback(
-    (host: string, port: number, deviceName: string) => {
+    (host, port, deviceName) => {
       const newClient = TcpSocket.connectTLS(
         {
           host,
@@ -126,6 +128,26 @@ export const TCPProvider: FC<{children: React.ReactNode}> = ({children}) => {
 
       newClient.on('data', async data => {
         const parseData = JSON.parse(data?.toString());
+        if (parseData?.event === 'file_ack') {
+          recevieFileAck(parseData?.file, newClient, setReceviedFiles);
+        }
+        if (parseData?.event === 'send_chunk_ack') {
+          sendChunkAck(
+            parseData?.chunkNo,
+            newClient,
+            setTotalSendBytes,
+            setSendFiles,
+          );
+        }
+        if (parseData?.event === 'receive_chunk_ack') {
+          receiveChunkAck(
+            parseData?.chunk,
+            parseData?.chunkNo,
+            newClient,
+            setTotalReceviedBytes,
+            generateFile,
+          );
+        }
       });
       newClient.on('close', () => {
         console.log('Connection Closed');
@@ -145,10 +167,10 @@ export const TCPProvider: FC<{children: React.ReactNode}> = ({children}) => {
 
   const disconnect = useCallback(() => {
     if (client) {
-      client.destory();
+      client.destroy();
     }
     if (server) {
-      server.destory();
+      server.destroy();
     }
     setReceviedFiles([]);
     setSendFiles([]);
@@ -159,10 +181,10 @@ export const TCPProvider: FC<{children: React.ReactNode}> = ({children}) => {
   }, [client, server]);
 
   const sendMessage = useCallback(
-    (message: string | Buffer) => {
+    message => {
       if (client) {
         client.write(JSON.stringify(message));
-        console.log('send from cleint: ', message);
+        console.log('send from client: ', message);
       } else if (server) {
         serverSocket.write(JSON.stringify(message));
         console.log('send from server: ', message);
@@ -173,7 +195,7 @@ export const TCPProvider: FC<{children: React.ReactNode}> = ({children}) => {
     [client, server],
   );
 
-  const sendFileAck = async (file: any, type: 'image' | 'file') => {
+  const sendFileAck = async (file, type) => {
     if (currentChunkSet != null) {
       Alert.alert('wait for current file to be sent!');
       return;
@@ -208,8 +230,8 @@ export const TCPProvider: FC<{children: React.ReactNode}> = ({children}) => {
       totalChunk,
     });
 
-    setSendFiles((prevData: any) => {
-      produce(prevData, (draft: any) => {
+    setSendFiles(prevData => {
+      produce(prevData, draft => {
         draft.push({...rawData, uri: file?.uri});
       });
     });
@@ -226,8 +248,50 @@ export const TCPProvider: FC<{children: React.ReactNode}> = ({children}) => {
     }
   };
 
+  const generateFile = async () => {
+    const {chunkStore, resetChunkeStore} = useChunkStore.getState();
+    if (!chunkStore) {
+      console.log('No chunks or file to process');
+      return;
+    }
+    if (chunkStore?.totalChunk !== chunkStore.chunkArray.length) {
+      console.error('not all chunks have been received ');
+      return;
+    }
+
+    try {
+      const combinedChunks = Buffer.concat(chunkStore.chunkArray);
+      const platformPath =
+        Platform.OS === 'ios'
+          ? `${RNFS.DownloadDirectoryPath}`
+          : `${RNFS.DocumentDirectoryPath}`;
+      const filePath = `${platformPath}/${chunkStore.name}`;
+
+      await RNFS.writeFile(
+        filePath,
+        combinedChunks?.toString('base64'),
+        'base64',
+      );
+      setReceviedFiles(prevFiles => {
+        produce(prevFiles, draftFiles => {
+          const fileIndex = draftFiles?.findIndex(f => f.id === chunkStore.id);
+          if (fileIndex !== -1) {
+            draftFiles[fileIndex] = {
+              ...draftFiles[fileIndex],
+              uri: filePath,
+              available: true,
+            };
+          }
+        });
+      });
+      console.log('FILE SAVED SUCCESSFULLY', filePath);
+      resetChunkeStore();
+    } catch (error) {
+      console.error('Error combining chunks or saving file:', error);
+    }
+  };
+
   return (
-    // eslint-disable-next-line react/react-in-jsx-scope
     <TCPContext.Provider
       value={{
         server,
